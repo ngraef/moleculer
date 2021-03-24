@@ -6,6 +6,7 @@
 
 "use strict";
 
+const { AsyncResource } = require("async_hooks");
 const _ 			= require("lodash");
 const Middlewares 	= require("./middlewares");
 const { BrokerOptionsError } = require("./errors");
@@ -65,7 +66,10 @@ class MiddlewareHandler {
 			}, handler);
 		}
 
-		return handler;
+		return (...args) => {
+			const asyncResource = new AsyncResource(`${method} handler`);
+			return asyncResource.runInAsyncScope(handler, this.broker, ...args);
+		};
 	}
 
 	/**
@@ -129,7 +133,10 @@ class MiddlewareHandler {
 			handler = list.reduce((next, fn) => fn.call(bindTo, next), handler.bind(bindTo));
 		}
 
-		return handler;
+		return (...args) => {
+			const asyncResource = new AsyncResource(`${method} handler`);
+			return asyncResource.runInAsyncScope(handler, bindTo, ...args);
+		};
 	}
 
 }
