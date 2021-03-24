@@ -425,8 +425,10 @@ declare namespace Moleculer {
 		maxQueueSize?: number;
 	}
 
+	type ActionCacheEnabledFuncType = (ctx: Context<any, any>) => boolean;
+
 	interface ActionCacheOptions {
-		enabled?: boolean;
+		enabled?: boolean | ActionCacheEnabledFuncType;
 		ttl?: number;
 		keys?: Array<string>;
 		lock?: {
@@ -678,6 +680,11 @@ declare namespace Moleculer {
 		[name: string]: ServiceAction;
 	}
 
+	interface WaitForServicesResult {
+		services: string[];
+		statuses: Array<{ name: string; available: boolean}>;
+	}
+
 	class Service<S = ServiceSettingSchema> implements ServiceSchema {
 		constructor(broker: ServiceBroker, schema?: ServiceSchema<S>);
 
@@ -701,7 +708,15 @@ declare namespace Moleculer {
 		_start(): Promise<void>;
 		_stop(): Promise<void>;
 
-		waitForServices(serviceNames: string | Array<string> | Array<GenericObject>, timeout?: number, interval?: number): Promise<void>;
+		/**
+		 * Wait for the specified services to become available/registered with this broker.
+		 * 
+		 * @param serviceNames The service, or services, we are waiting for.
+		 * @param timeout The total time this call may take. If this time has passed and the service(s)
+		 * 						    are not available an error will be thrown. (In milliseconds)
+		 * @param interval The time we will wait before once again checking if the service(s) are available (In milliseconds)
+		 */
+		waitForServices(serviceNames: string | Array<string> | Array<ServiceDependency>, timeout?: number, interval?: number, logger?: LoggerInstance): Promise<WaitForServicesResult>;
 
 
 		[name: string]: any;
