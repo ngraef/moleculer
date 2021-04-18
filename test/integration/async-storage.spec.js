@@ -10,7 +10,7 @@ describe("Test Async Storage class", () => {
 		expect(storage.store).toBeInstanceOf(Map);
 	});
 
-	it("should store context for async thread", async () => {
+	it("should store context for async thread", () => {
 		const broker = {};
 		const storage = new AsyncStorage(broker);
 
