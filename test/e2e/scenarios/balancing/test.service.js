@@ -1,29 +1,38 @@
+const { logActionCalling, logEventEmitting } = require("../../utils");
+
 module.exports = {
 	name: "test",
 
 	actions: {
 		work: {
 			handler(ctx) {
-				ctx.broadcast("$scenario.action.called", {
-					nodeID: this.broker.nodeID,
-					action: ctx.action.name,
-					params: ctx.params,
-					meta: ctx.meta
-				});
-
+				logActionCalling(this, ctx);
 				return true;
+			}
+		},
+
+		hello: {
+			handler(ctx) {
+				const { delay = 0, crash = false } = ctx.params;
+
+				if (crash && this.broker.nodeID == "node1")
+					return this.broker.stop();
+
+				return this.Promise.delay(delay)
+					.then(() => {
+						logActionCalling(this, ctx);
+						return {
+							i: ctx.params.i,
+							nodeID: this.broker.nodeID
+						};
+					});
 			}
 		}
 	},
 
 	events: {
 		"sample.event"(ctx) {
-			ctx.broadcast("$scenario.event.emitted", {
-				nodeID: this.broker.nodeID,
-				event: ctx.eventName,
-				params: ctx.params,
-				meta: ctx.meta
-			});
+			logEventEmitting(this, ctx);
 		}
 	}
 };

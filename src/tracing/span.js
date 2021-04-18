@@ -1,6 +1,6 @@
 "use strict";
 
-const now = require("./now");
+const { now } = require("perf_hooks").performance;
 
 function defProp(instance, propName, value, readOnly = false) {
 	Object.defineProperty(instance, propName, {
@@ -57,6 +57,7 @@ class Span {
 		defProp(this, "autoActivate", this.opts.autoActivate != null ? this.opts.autoActivate : true);
 
 		this.startTime = null;
+		this.startTicks = null;
 		this.finishTime = null;
 		this.duration = null;
 
@@ -82,12 +83,23 @@ class Span {
 	start(time) {
 		this.logger.debug(`[${this.id}] Span '${this.name}' is started.`);
 
-		this.startTime = time || now();
+		this.startTime = time || Date.now();
+		this.startTicks = now();
 		// console.log(`"${this.name}" start time: ${this.startTime}`);
 
 		this.tracer.spanStarted(this);
 
 		return this;
+	}
+
+	/**
+	 * Get the current time.
+	 *
+	 * @returns {Number}
+	 * @memberof Span
+	 */
+	getTime() {
+		return this.startTime + now() - this.startTicks;
 	}
 
 	/**
@@ -114,7 +126,7 @@ class Span {
 	 * @memberof Span
 	 */
 	log(name, fields, time) {
-		time = time || now();
+		time = time || this.getTime();
 
 		this.logs.push({
 			name,
@@ -148,7 +160,7 @@ class Span {
 	 * @memberof Span
 	 */
 	finish(time) {
-		this.finishTime = time ? time : now();
+		this.finishTime = time ? time : this.getTime();
 		this.duration = this.finishTime - this.startTime;
 
 		// console.log(`"${this.name}" stop time: ${this.finishTime}  Duration: ${this.duration}`);

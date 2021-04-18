@@ -8,8 +8,7 @@ jobs:
     strategy:
       matrix:
         node-version: [14.x]
-        # transporter: [NATS, Redis, MQTT, AMQP, STAN, Kafka, TCP]
-        transporter: [NATS, Redis, MQTT, TCP]
+        transporter: [NATS, Redis, MQTT, AMQP, AMQP10, STAN, Kafka, TCP]
         serializer: [JSON, MsgPack, Notepack, ProtoBuf, Avro, Thrift]
       fail-fast: false
 
@@ -24,12 +23,40 @@ jobs:
     - name: Install dependencies
       run: npm ci
 
-    - name: Start transporter/cacher dependencies
-      run: docker-compose up -d
+    - name: Start NATS
+      run: docker-compose up -d nats && sleep 10
+      if: ${{ matrix.transporter == 'NATS' }}
       working-directory: ./test
 
-    - name: Sleeping 10 secs
-      run: sleep 10
+    - name: Start Redis
+      run: docker-compose up -d redis && sleep 10
+      if: ${{ matrix.transporter == 'Redis' }}
+      working-directory: ./test
+
+    - name: Start MQTT
+      run: docker-compose up -d mqtt && sleep 10
+      if: ${{ matrix.transporter == 'MQTT' }}
+      working-directory: ./test
+
+    - name: Start RabbitMQ
+      run: docker-compose up -d rabbitmq && sleep 10
+      if: ${{ matrix.transporter == 'AMQP' }}
+      working-directory: ./test
+
+    - name: Start ActiveMQ
+      run: docker-compose up -d activemq && sleep 30
+      if: ${{ matrix.transporter == 'AMQP10' }}
+      working-directory: ./test
+
+    - name: Start NATS Streaming
+      run: docker-compose up -d stan && sleep 10
+      if: ${{ matrix.transporter == 'STAN' }}
+      working-directory: ./test
+
+    - name: Start Kafka
+      run: docker-compose up -d zookeeper kafka && sleep 60
+      if: ${{ matrix.transporter == 'Kafka' }}
+      working-directory: ./test
 
     - name: Check containers
       run: docker-compose ps
@@ -39,19 +66,13 @@ jobs:
       run: docker-compose logs
       working-directory: ./test
 
-    - name: Execute E2E tests (basic)
-      run: ./start.sh
-      working-directory: ./test/e2e/scenarios/basic
+    - name: Execute E2E tests
+      run: npm run test:e2e
+      timeout-minutes: 5
       env:
         TRANSPORTER: ${{ matrix.transporter }}
         SERIALIZER: ${{ matrix.serializer }}
-
-    - name: Execute E2E tests (balancing)
-      run: ./start.sh
-      working-directory: ./test/e2e/scenarios/balancing
-      env:
-        TRANSPORTER: ${{ matrix.transporter }}
-        SERIALIZER: ${{ matrix.serializer }}
+        #LOGLEVEL: info
 
     - name: Stop containers
       run: docker-compose down -v

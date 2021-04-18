@@ -449,8 +449,16 @@ declare namespace Moleculer {
 		error?: string | ActionHookError | Array<string | ActionHookError>;
 	}
 
+	interface RestSchema{
+		path?: string,
+		method?: 'GET' | 'POST' | 'DELETE' | 'PUT' | 'PATCH',
+		fullPath?: string,
+		basePath?: string,
+	}
+
 	interface ActionSchema {
 		name?: string;
+		rest?: RestSchema | string | string[],
 		visibility?: ActionVisibility;
 		params?: ActionParams;
 		service?: Service;
@@ -710,7 +718,7 @@ declare namespace Moleculer {
 
 		/**
 		 * Wait for the specified services to become available/registered with this broker.
-		 * 
+		 *
 		 * @param serviceNames The service, or services, we are waiting for.
 		 * @param timeout The total time this call may take. If this time has passed and the service(s)
 		 * 						    are not available an error will be thrown. (In milliseconds)
@@ -1237,7 +1245,7 @@ declare namespace Moleculer {
 	type Cacher<T extends Cachers.Base = Cachers.Base> = T;
 
 	class Serializer {
-		constructor();
+		constructor(opts?: any);
 		init(broker: ServiceBroker): void;
 		serialize(obj: GenericObject, type: string): Buffer;
 		deserialize(buf: Buffer, type: string): GenericObject;
@@ -1247,6 +1255,7 @@ declare namespace Moleculer {
 		Base: Serializer,
 		JSON: Serializer,
 		Avro: Serializer,
+		CBOR: Serializer,
 		MsgPack: Serializer,
 		ProtoBuf: Serializer,
 		Thrift: Serializer,
