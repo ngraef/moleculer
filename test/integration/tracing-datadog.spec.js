@@ -3,24 +3,64 @@
 const _ = require("lodash");
 const H = require("./helpers");
 const semver = require("semver");
+const BaseLogger = require("../../src/loggers/base");
 
 // Mock agent exporter to avoid failed network requests
 jest.mock("dd-trace/packages/dd-trace/src/exporters/agent");
 
+/**
+ * A logger that captures records associated with an active trace
+ */
+class TraceCaptureLogger extends BaseLogger {
+	constructor(opts) {
+		super(opts);
+		this.logs = [];
+	}
+	getLogHandler(bindings) {
+		const level = bindings ? this.getLogLevel(bindings.mod) : null;
+		if (!level) return null;
+
+		const levelIdx = BaseLogger.LEVELS.indexOf(level);
+
+		return (type, args) => {
+			const typeIdx = BaseLogger.LEVELS.indexOf(type);
+			if (typeIdx > levelIdx) return;
+
+			const record = {
+				ts: Date.now(),
+				level: type,
+				msg: args.join(" "),
+				dd: {},
+				...bindings,
+			};
+
+			const traceId =
+				this.broker.tracer && this.broker.tracer.getCurrentTraceID();
+			if (traceId && record.mod !== "tracer") {
+				record.dd.trace_id = traceId;
+				record.dd.span_id = this.broker.tracer.getActiveSpanID();
+				this.logs.push(record);
+			}
+		};
+	}
+}
+
 // Build list of supported Scope implementations to test
-let supportedScopes = ["async_hooks" /*, "async_resource"*/];
+let supportedScopes = ["async_hooks"];
 if (semver.satisfies(process.versions.node, ">=14.5 || ^12.19.0")) {
+	supportedScopes.push("async_resource");
 	supportedScopes.push("async_local_storage");
 }
 
 supportedScopes.forEach((scope) => {
 	describe(`Test Tracing Datadog exporter - ${scope} scope`, () => {
 		let STORE = [];
+		let broker = null;
 
 		const COMMON_SETTINGS = {
 			logger: false,
-			logLevel: "trace",
-			namespace: "tracing",
+			logLevel: "debug",
+			namespace: `tracing-${scope}`,
 			tracing: {
 				enabled: true,
 				actions: true,
@@ -33,6 +73,9 @@ supportedScopes.forEach((scope) => {
 						type: "Datadog",
 						options: {
 							tracerOptions: {
+								scope,
+							},
+							defaultTags: {
 								scope,
 							},
 						},
@@ -57,26 +100,12 @@ supportedScopes.forEach((scope) => {
 			},
 			actions: {
 				async echo(ctx) {
-					await new Promise((r) => setTimeout(r, 1000));
+					await new Promise((r) => setTimeout(r, 100));
 					return ctx.params;
 				},
 
 				async getSpan() {
-					const span = this.broker.tracer.exporter[0].ddTracer
-						.scope()
-						.active();
-					const context = span.context();
-
-					return {
-						traceId: context._traceId
-							.toString(16)
-							.padStart(16, "0"),
-						spanId: context._spanId.toString(16).padStart(16, "0"),
-						parentId: context._parentId
-							? context._parentId.toString(16).padStart(16, "0")
-							: null,
-						tags: context._tags,
-					};
+					return this.getActiveSpan();
 				},
 
 				async triggerEvent(ctx) {
@@ -94,15 +123,73 @@ supportedScopes.forEach((scope) => {
 						});
 					}
 				},
+
+				async customSpans(ctx) {
+					const spans = [this.getActiveSpan()];
+
+					// parent
+					const span1 = ctx.startSpan("span1");
+					await new Promise((r) => setTimeout(r, 100));
+					spans.push(this.getActiveSpan());
+
+					// child
+					const span2 = ctx.startSpan("span2");
+					await new Promise((r) => setTimeout(r, 50));
+					spans.push(this.getActiveSpan());
+					ctx.finishSpan(span2);
+
+					spans.push(this.getActiveSpan());
+					ctx.finishSpan(span1);
+
+					// independent
+					const span3 = ctx.startSpan("span3");
+					await new Promise((r) => setTimeout(r, 250)).then(() => {
+						spans.push(this.getActiveSpan());
+						ctx.finishSpan(span3);
+
+						spans.push(this.getActiveSpan());
+					});
+
+					// spans == [action, span1, span2, span1, span3, action]
+					return spans;
+				},
+			},
+
+			methods: {
+				getActiveSpan() {
+					const span = this.broker.tracer.exporter[0].ddTracer
+						.scope()
+						.active();
+
+					if (!span) return null;
+
+					const context = span.context();
+
+					return {
+						traceId: context.toTraceId(),
+						spanId: context.toSpanId(),
+						parentId: context._parentId
+							? context._parentId.toString(10)
+							: null,
+						name: context._name,
+						tags: context._tags,
+					};
+				},
 			},
 		};
 
-		const broker = H.createNode(
-			_.defaultsDeep({ nodeID: "broker-0" }, COMMON_SETTINGS),
-			[TestTracingService]
-		);
-
-		beforeAll(() => broker.start());
+		beforeAll(() => {
+			// Reset dd-trace module so it can be reinitialized with the new scope setting
+			jest.resetModules();
+			broker = H.createNode(
+				_.defaultsDeep(
+					{ nodeID: `broker-${scope}-0` },
+					COMMON_SETTINGS
+				),
+				[TestTracingService]
+			);
+			return broker.start();
+		});
 
 		afterAll(() => broker.stop());
 
@@ -112,17 +199,21 @@ supportedScopes.forEach((scope) => {
 		});
 
 		it("sets the span as active in dd-trace", async () => {
+			// Get the active span from dd tracer
 			const span = await broker.call("tracing-collector.getSpan", {
 				foo: "bar",
 			});
 
+			// Compare dd tracer span to moleculer span
 			expect(STORE).toHaveLength(1);
 			expect(span).not.toBeNull();
 			expect(span.traceId).toBe(
-				STORE[0].traceID.replace(/-/g, "").slice(0, 16)
+				broker.tracer.exporter[0]
+					.convertID(STORE[0].traceID)
+					.toString(10)
 			);
 			expect(span.spanId).toBe(
-				STORE[0].id.replace(/-/g, "").slice(0, 16)
+				broker.tracer.exporter[0].convertID(STORE[0].id).toString(10)
 			);
 			expect(span.parentId).toBeNull();
 			expect(span.tags).toEqual(
@@ -135,60 +226,29 @@ supportedScopes.forEach((scope) => {
 		});
 
 		it("has an isolated async context", async () => {
+			const ddScope = broker.tracer.exporter[0].ddTracer.scope();
+			expect(ddScope.active()).toBeNull();
+
 			const request = broker.call("tracing-collector.echo", {
 				phrase: "hello",
 			});
 
 			// Check sync context
-			const ddTracer = broker.tracer.exporter[0].ddTracer;
-			let span = ddTracer.scope().active();
-			expect(span).toBeNull();
+			expect(ddScope.active()).toBeNull();
 
 			await request;
 
-			span = ddTracer.scope().active();
-			expect(span).toBeNull();
+			expect(ddScope.active()).toBeNull();
 		});
 
 		it("can be used with log injector", async () => {
-			const logSpy = jest.spyOn(console, "log").mockImplementation();
+			const loggerInstance = new TraceCaptureLogger();
 			const logTestBroker = H.createNode(
 				_.defaultsDeep(
 					{
-						nodeID: "broker-1",
+						nodeID: "broker-log-1",
 						logLevel: "info",
-						logger: {
-							type: "Console",
-							options: {
-								colors: false,
-								formatter(
-									level,
-									args,
-									bindings,
-									{ printArgs }
-								) {
-									const record = {
-										ts: Date.now(),
-										level,
-										msg: printArgs(args).join(" "),
-										dd: {},
-										...bindings,
-									};
-
-									const traceId =
-										this.broker.tracer &&
-										this.broker.tracer.getCurrentTraceID();
-									if (traceId && record.mod !== "tracer") {
-										record.dd.trace_id = traceId;
-										record.dd.span_id = this.broker.tracer.getActiveSpanID();
-										return [JSON.stringify(record)];
-									}
-
-									// For testing purposes, only log messages associated with a trace
-									return [];
-								},
-							},
-						},
+						logger: loggerInstance,
 					},
 					COMMON_SETTINGS
 				),
@@ -202,16 +262,11 @@ supportedScopes.forEach((scope) => {
 			});
 			await logTestBroker.stop();
 
-			// Filter out empty logs
-			const calls = logSpy.mock.calls.filter(
-				(call) => call[0] !== undefined
-			);
-
 			// Expect only 2 logs. If more, span context is not being properly deactivated
-			expect(calls).toHaveLength(2);
+			expect(loggerInstance.logs).toHaveLength(2);
 
 			// Expect logger to be called with injected log
-			const log1 = JSON.parse(calls[0][0]);
+			const log1 = loggerInstance.logs[0];
 			expect(log1).toEqual({
 				ts: expect.any(Number),
 				level: "info",
@@ -220,13 +275,13 @@ supportedScopes.forEach((scope) => {
 					trace_id: expect.any(String),
 					span_id: expect.any(String),
 				},
-				nodeID: "broker-1",
-				ns: "tracing",
+				nodeID: "broker-log-1",
+				ns: `tracing-${scope}`,
 				mod: "tracing-collector",
 				svc: "tracing-collector",
 			});
 
-			const log2 = JSON.parse(calls[1][0]);
+			const log2 = loggerInstance.logs[1];
 			expect(log2).toEqual({
 				ts: expect.any(Number),
 				level: "info",
@@ -235,8 +290,8 @@ supportedScopes.forEach((scope) => {
 					trace_id: expect.any(String),
 					span_id: expect.any(String),
 				},
-				nodeID: "broker-1",
-				ns: "tracing",
+				nodeID: "broker-log-1",
+				ns: `tracing-${scope}`,
 				mod: "tracing-collector",
 				svc: "tracing-collector",
 			});
@@ -245,6 +300,57 @@ supportedScopes.forEach((scope) => {
 			expect(log1.dd.trace_id).toEqual(log1.dd.span_id);
 			expect(log1.dd.trace_id).toEqual(log2.dd.trace_id);
 			expect(log1.dd.span_id).not.toEqual(log2.dd.span_id);
+		});
+
+		it("works with user-defined spans in action handler", async () => {
+			const ddTracer = broker.tracer.exporter[0].ddTracer;
+			let span = ddTracer.scope().active();
+			expect(span).toBeNull();
+
+			const spans = await broker.call("tracing-collector.customSpans");
+
+			// spans == [action, span1, span2, span1, span3, action]
+			expect(spans).toHaveLength(6);
+
+			// expect all the spans to be part of the same trace
+			expect(_.uniq(spans.map((s) => s.traceId))).toHaveLength(1);
+
+			// expect correct names and parent ids
+			expect(spans[0]).toHaveProperty(
+				"name",
+				"action 'tracing-collector.customSpans'"
+			);
+			expect(spans[0]).toEqual(spans[5]);
+			expect(spans[0]).toHaveProperty("parentId", null);
+
+			expect(spans[1]).toHaveProperty("name", "span1");
+			expect(spans[1]).toEqual(spans[3]);
+			expect(spans[1]).toHaveProperty("parentId", spans[0].spanId);
+
+			expect(spans[2]).toHaveProperty("name", "span2");
+			expect(spans[2]).toHaveProperty("parentId", spans[1].spanId);
+
+			expect(spans[4]).toHaveProperty("name", "span3");
+			expect(spans[4]).toHaveProperty("parentId", spans[0].spanId);
+		});
+
+		it("uses an external span as a parent", async () => {
+			const ddTracer = broker.tracer.exporter[0].ddTracer;
+
+			const [result, spanContext] = await ddTracer.trace(
+				"test-external",
+				async (span) => {
+					const r = await broker.call(
+						"tracing-collector.getSpan",
+						{}
+					);
+					return [r, span.context()];
+				}
+			);
+
+			expect(result).not.toBeNull();
+			expect(result).toHaveProperty("traceId", spanContext.toTraceId());
+			expect(result).toHaveProperty("parentId", spanContext.toSpanId());
 		});
 	});
 });

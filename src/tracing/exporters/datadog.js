@@ -1,5 +1,6 @@
 "use strict";
 
+const { executionAsyncResource } = require("async_hooks");
 const _ 					= require("lodash");
 const BaseTraceExporter 	= require("./base");
 const { isFunction } 		= require("../../utils");
@@ -69,7 +70,10 @@ class DatadogTraceExporter extends BaseTraceExporter {
 
 		this.ddScope = this.ddTracer.scope();
 
-		// dd-trace-js defaults to AsyncLocalStorage for node >=14.5 || ^12.19.0, but the old implementation can be forced with the `scope: "async_hooks"` init option
+		// Determine which scope implementation is being used by dd tracer.
+		// dd-trace-js defaults to async_resource for node >=14.5 || ^12.19.0, but async_hooks
+		// and async_local_storage can be forced with the `scope` init option
+		this.usesAsyncResource = this.ddScope._ddResourceStore !== undefined;
 		this.usesAsyncLocalStorage = this.ddScope._storage !== undefined;
 
 		const oldGetCurrentTraceID = this.tracer.getCurrentTraceID.bind(this.tracer);
@@ -129,8 +133,7 @@ class DatadogTraceExporter extends BaseTraceExporter {
 		if (span.parentID) {
 			const parentCtx = new DatadogSpanContext({
 				traceId: this.convertID(span.traceID),
-				spanId: this.convertID(span.parentID),
-				parentId: this.convertID(span.parentID)
+				spanId: this.convertID(span.parentID)
 			});
 			reference = new Reference(span.type === "event" ? "follows_from" : "child_of", parentCtx);
 		}
@@ -157,20 +160,56 @@ class DatadogTraceExporter extends BaseTraceExporter {
 		sc._traceId = this.convertID(span.traceID);
 		sc._spanId = this.convertID(span.id);
 
-		// Save current active span to restore later
-		const oldSpan = this.ddScope.active();
+		let deactivate;
 
-		// Activate new span in Datadog tracer
-		if (this.usesAsyncLocalStorage) {
-			this.ddScope._storage.enterWith(ddSpan);
-		} else {
-			this.ddScope._enter(ddSpan);
+		// If the caller doesn't plan to use the preferred `activate` method,
+		// we need to do our best to activate the span in the dd-trace internals
+		if (span.autoActivate) {
+			// Save current active span to restore later
+			const previousSpan = this.ddScope.active();
+			const asyncResource = executionAsyncResource();
+
+			// Activate new span in Datadog tracer
+			if (this.usesAsyncResource) {
+				this.ddScope._enter(ddSpan, asyncResource);
+			} else if (this.usesAsyncLocalStorage) {
+				this.ddScope._storage.enterWith(ddSpan);
+			} else {
+				this.ddScope._enter(ddSpan);
+			}
+
+			// Prepare deactivation function for later
+			deactivate = () => {
+				if (this.usesAsyncResource) {
+					this.ddScope._exit(asyncResource);
+					const currentResource = executionAsyncResource();
+					if (currentResource !== asyncResource) {
+						this.ddScope._exit(currentResource);
+						this.ddScope._enter(previousSpan || null, currentResource);
+					}
+				} else if (this.usesAsyncLocalStorage) {
+					this.ddScope._storage.enterWith(previousSpan || null);
+				} else {
+					this.ddScope._exit(previousSpan || null);
+				}
+			};
 		}
 
 		span.meta.datadog = {
 			span: ddSpan,
-			oldSpan
+			deactivate
 		};
+	}
+
+	/**
+	 * Activate a span in the scope of a function.
+	 *
+	 * @param {Span} span
+	 * @param {Function} fn
+	 * @returns
+	 */
+	activate(span, fn) {
+		return this.ddScope.activate(span.meta.datadog.span, fn);
 	}
 
 	/**
@@ -193,14 +232,12 @@ class DatadogTraceExporter extends BaseTraceExporter {
 
 		this.addLogs(ddSpan, span.logs);
 
-		ddSpan.finish(span.finishTime);
-
-		// Restore previous active span
-		if (this.usesAsyncLocalStorage) {
-			this.ddScope._storage.enterWith(item.oldSpan || null);
-		} else {
-			this.ddScope._exit(item.oldSpan || null);
+		// Deactivate the span in the context if needed
+		if (item.deactivate) {
+			item.deactivate();
 		}
+
+		ddSpan.finish(span.finishTime);
 	}
 
 	/**
@@ -286,9 +323,11 @@ class DatadogTraceExporter extends BaseTraceExporter {
 	 */
 	convertID(id) {
 		if (id) {
+			// Parse guid as a hex string
 			if (id.indexOf("-") !== -1)
-				return DatadogID(id.replace(/-/g, "").substring(0,16));
-			return DatadogID(id);
+				return DatadogID(id.replace(/-/g, "").substring(0,16), 16);
+			// Otherwise, parse as a decimal string
+			return DatadogID(id, 10);
 		}
 
 		return null;

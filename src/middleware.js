@@ -66,10 +66,7 @@ class MiddlewareHandler {
 			}, handler);
 		}
 
-		return (...args) => {
-			const asyncResource = new AsyncResource(`${method} handler`);
-			return asyncResource.runInAsyncScope(handler, this.broker, ...args);
-		};
+		return handler;
 	}
 
 	/**
@@ -133,10 +130,7 @@ class MiddlewareHandler {
 			handler = list.reduce((next, fn) => fn.call(bindTo, next), handler.bind(bindTo));
 		}
 
-		return (...args) => {
-			const asyncResource = new AsyncResource(`${method} handler`);
-			return asyncResource.runInAsyncScope(handler, bindTo, ...args);
-		};
+		return handler;
 	}
 
 }
