@@ -311,7 +311,26 @@ supportedScopes.forEach((scope) => {
 			expect(log1.dd.span_id).not.toEqual(log2.dd.span_id);
 		});
 
-		it("works with user-defined spans in action handler", async () => {
+		it("uses an external span as a parent", async () => {
+			const ddTracer = broker.tracer.exporter[0].ddTracer;
+
+			const [result, spanContext] = await ddTracer.trace(
+				"test-external",
+				async (span) => {
+					const r = await broker.call(
+						"tracing-collector.getSpan",
+						{}
+					);
+					return [r, span.context()];
+				}
+			);
+
+			expect(result).not.toBeNull();
+			expect(result).toHaveProperty("traceId", spanContext.toTraceId());
+			expect(result).toHaveProperty("parentId", spanContext.toSpanId());
+		});
+
+		it("works with custom spans in action handler", async () => {
 			const ddTracer = broker.tracer.exporter[0].ddTracer;
 			let span = ddTracer.scope().active();
 			expect(span).toBeNull();
@@ -341,25 +360,6 @@ supportedScopes.forEach((scope) => {
 
 			expect(spans[4]).toHaveProperty("name", "span3");
 			expect(spans[4]).toHaveProperty("parentId", spans[0].spanId);
-		});
-
-		it("uses an external span as a parent", async () => {
-			const ddTracer = broker.tracer.exporter[0].ddTracer;
-
-			const [result, spanContext] = await ddTracer.trace(
-				"test-external",
-				async (span) => {
-					const r = await broker.call(
-						"tracing-collector.getSpan",
-						{}
-					);
-					return [r, span.context()];
-				}
-			);
-
-			expect(result).not.toBeNull();
-			expect(result).toHaveProperty("traceId", spanContext.toTraceId());
-			expect(result).toHaveProperty("parentId", spanContext.toSpanId());
 		});
 
 		it("works with event handlers", async () => {

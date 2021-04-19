@@ -6,7 +6,6 @@
 
 "use strict";
 
-const { AsyncResource } = require("async_hooks");
 const _ 			= require("lodash");
 const Middlewares 	= require("./middlewares");
 const { BrokerOptionsError } = require("./errors");

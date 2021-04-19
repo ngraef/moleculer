@@ -216,7 +216,7 @@ module.exports = function TracingMiddleware(broker) {
 				ctx.tracing = span.sampled;
 
 				// Call the handler
-				return tracer.activate(span, () => handler.call(service, ctx)).then(() => {
+				return tracer.activate(span, () => handler.apply(service, arguments)).then(() => {
 					ctx.finishSpan(span);
 				}).catch(err => {
 					span.setError(err);

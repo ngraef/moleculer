@@ -163,7 +163,8 @@ class DatadogTraceExporter extends BaseTraceExporter {
 		let deactivate;
 
 		// If the caller doesn't plan to use the preferred `activate` method,
-		// we need to do our best to activate the span in the dd-trace internals
+		// we need to do our best to activate the span in the dd-trace internals.
+		// In certain situations, this has issues with active spans leaking outside their async scope.
 		if (span.autoActivate) {
 			// Save current active span to restore later
 			const previousSpan = this.ddScope.active();
@@ -326,7 +327,7 @@ class DatadogTraceExporter extends BaseTraceExporter {
 			// Parse guid as a hex string
 			if (id.indexOf("-") !== -1)
 				return DatadogID(id.replace(/-/g, "").substring(0,16), 16);
-			// Otherwise, parse as a decimal string
+			// Otherwise, parse as a decimal string because this is likely an ID from dd-trace
 			return DatadogID(id, 10);
 		}
 

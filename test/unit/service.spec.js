@@ -707,6 +707,7 @@ describe("Test Service class", () => {
 				service: svc
 			});
 
+			expect(svc.list).toBe(res.handler);
 			expect(svc.list("John")).toBe("Hello John");
 		});
 
@@ -728,6 +729,7 @@ describe("Test Service class", () => {
 				uppercase: true
 			});
 
+			expect(svc.hello).toBe(res.handler);
 			expect(svc.hello("John")).toBe("Hello John");
 		});
 
