@@ -64,7 +64,7 @@ supportedScopes.forEach((scope) => {
 			tracing: {
 				enabled: true,
 				actions: true,
-				events: false,
+				events: true,
 				sampling: {
 					rate: 1,
 				},
@@ -96,7 +96,15 @@ supportedScopes.forEach((scope) => {
 				"$tracing.spans"(ctx) {
 					STORE.push(...ctx.params);
 				},
-				"some.event"() {},
+				async "some.event"(ctx) {
+					STORE.push(this.getActiveSpan());
+					const span = ctx.startSpan("custom span");
+					STORE.push(this.getActiveSpan());
+					await new Promise((r) => setTimeout(r, 100));
+					STORE.push(this.getActiveSpan());
+					ctx.finishSpan(span);
+					STORE.push(this.getActiveSpan());
+				},
 			},
 			actions: {
 				async echo(ctx) {
@@ -109,6 +117,7 @@ supportedScopes.forEach((scope) => {
 				},
 
 				async triggerEvent(ctx) {
+					STORE.push(this.getActiveSpan());
 					await ctx.emit("some.event", { foo: "bar" });
 				},
 
@@ -351,6 +360,37 @@ supportedScopes.forEach((scope) => {
 			expect(result).not.toBeNull();
 			expect(result).toHaveProperty("traceId", spanContext.toTraceId());
 			expect(result).toHaveProperty("parentId", spanContext.toSpanId());
+		});
+
+		it("works with event handlers", async () => {
+			await broker.call("tracing-collector.triggerEvent");
+
+			// Filter out objects from the event exporter
+			const spans = STORE.filter((item) => !item.id);
+
+			// spans = [action, event, custom, custom, event]
+			expect(spans).toHaveLength(5);
+
+			// expect all the spans to be part of the same trace
+			expect(_.uniq(spans.map((s) => s.traceId))).toHaveLength(1);
+
+			// expect correct names and parent ids
+			expect(spans[0]).toHaveProperty(
+				"name",
+				"action 'tracing-collector.triggerEvent'"
+			);
+			expect(spans[0]).toHaveProperty("parentId", null);
+
+			expect(spans[1]).toHaveProperty(
+				"name",
+				"event 'some.event' in 'tracing-collector'"
+			);
+			expect(spans[1]).toEqual(spans[4]);
+			expect(spans[1]).toHaveProperty("parentId", spans[0].spanId);
+
+			expect(spans[2]).toHaveProperty("name", "custom span");
+			expect(spans[2]).toEqual(spans[3]);
+			expect(spans[2]).toHaveProperty("parentId", spans[1].spanId);
 		});
 	});
 });
